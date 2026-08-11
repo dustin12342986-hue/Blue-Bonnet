@@ -291,6 +291,14 @@
 
 <script>
 (function () {
+  // ---- PWA install support ----
+  // Registered first, before any other init. If something later in this
+  // script throws on a particular device, install support still works —
+  // Chrome won't offer to install without an active service worker.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(function () {});
+  }
+
   // Surface any startup error visibly instead of failing silently —
   // a thrown error partway through leaves buttons rendered but unwired.
   window.addEventListener("error", function (e) {
@@ -947,11 +955,6 @@ TRAVEL / PACKING
   window.addEventListener("online", function () {
     if (pushPending && isSignedIn()) pushToDrive();
   });
-
-  // ---- PWA install support ----
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js");
-  }
 
 
   const CALIBRATION_QUESTIONS = [
