@@ -1422,6 +1422,25 @@ TRAVEL / PACKING
   // ---- Learning from the conversation ----
   // After each exchange, quietly ask the model to note anything worth
   // remembering. Runs in the background; failures are silent by design.
+  // Memory extraction costs a second API call, so it runs every few
+  // exchanges rather than every single one. Nothing about the reply
+  // changes — only how often durable facts get written.
+  const MEMORY_EVERY_N_EXCHANGES = 4;
+  let exchangesSinceMemory = 0;
+
+  function maybeUpdateMemory(force) {
+    exchangesSinceMemory++;
+    if (force || exchangesSinceMemory >= MEMORY_EVERY_N_EXCHANGES) {
+      exchangesSinceMemory = 0;
+      updateMemoryFromConversation();
+    }
+  }
+
+  // Don't lose the last few exchanges if they close the tab mid-thought
+  window.addEventListener("pagehide", () => {
+    if (exchangesSinceMemory > 0) updateMemoryFromConversation();
+  });
+
   async function updateMemoryFromConversation() {
     if (messages.length < 2) return;
     try {
@@ -1580,7 +1599,7 @@ Be conservative — only genuinely useful, durable items. Never include anything
         const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n") || "No response received.";
         render("assistant", text);
         messages.push({ role: "assistant", content: text });
-        updateMemoryFromConversation();
+        maybeUpdateMemory();
         // In conversation mode, speak the reply then automatically listen again
         if (conversationMode) {
           setLoading(false);
