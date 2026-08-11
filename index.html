@@ -829,10 +829,21 @@ TRAVEL / PACKING
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = speechRate;
     utter.pitch = 1.0;
+    // On Android the voice list is often empty at first and populates late.
+    // Setting utter.voice to a stale/invalid entry makes Chrome silently
+    // refuse to speak, so only set it when we genuinely have a live match.
     const chosen = getActiveVoice();
-    if (chosen) utter.voice = chosen;
+    const liveVoices = synth.getVoices();
+    if (chosen && liveVoices.some((v) => v.name === chosen.name)) {
+      utter.voice = chosen;
+    }
     utter.onend = () => { if (onDone) onDone(); };
-    utter.onerror = () => { if (onDone) onDone(); };
+    utter.onerror = (ev) => {
+      if (window.__bbVoiceDebug) {
+        render("assistant", `[debug] speech error: ${ev.error || "unknown"} · voice: ${chosen ? chosen.name : "none"} · unlocked: ${speechUnlocked}`);
+      }
+      if (onDone) onDone();
+    };
     synth.speak(utter);
     // Chrome silently pauses long utterances after ~15s. Poking resume()
     // on a timer keeps speech alive until it finishes.
@@ -926,6 +937,19 @@ TRAVEL / PACKING
     if (synth) synth.cancel();
     voicePanel.classList.remove("show");
   };
+
+  // Long-press the gear to toggle voice diagnostics (useful on phones
+  // where there's no console to check).
+  let gearHold = null;
+  const gearBtn = document.getElementById("voiceSettingsBtn");
+  gearBtn.addEventListener("touchstart", () => {
+    gearHold = setTimeout(() => {
+      window.__bbVoiceDebug = !window.__bbVoiceDebug;
+      const v = synth ? synth.getVoices().filter((x) => /^en/i.test(x.lang)) : [];
+      render("assistant", `[debug ${window.__bbVoiceDebug ? "ON" : "OFF"}] voices available: ${v.length} · unlocked: ${speechUnlocked} · speaking: ${synth ? synth.speaking : "n/a"} · chosen: ${chosenVoiceName || "auto"}`);
+    }, 900);
+  });
+  gearBtn.addEventListener("touchend", () => { if (gearHold) clearTimeout(gearHold); });
   // Voice list often loads asynchronously
   if (synth) synth.onvoiceschanged = () => { if (voicePanel.classList.contains("show")) renderVoiceList(); };
 
