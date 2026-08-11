@@ -801,8 +801,30 @@ TRAVEL / PACKING
     return ranked[0];
   }
 
+  // Mobile browsers block speech synthesis unless it's been "unlocked" by a
+  // direct user gesture at least once. Speaking a silent utterance on the
+  // first real tap satisfies that requirement for the rest of the session.
+  let speechUnlocked = false;
+  let speechKeepAlive = null;
+  let recognition = null;
+  let listening = false;
+  function unlockSpeech() {
+    if (speechUnlocked || !synth) return;
+    try {
+      const silent = new SpeechSynthesisUtterance("");
+      silent.volume = 0;
+      synth.speak(silent);
+      speechUnlocked = true;
+    } catch (e) {}
+  }
+
   function speak(text, onDone) {
     if (!synth) { if (onDone) onDone(); return; }
+    // Chrome (esp. Android) can get stuck in a paused state after
+    // recognition takes over the audio channel — nudge it back awake.
+    try { synth.resume(); } catch (e) {}
+    // Make sure the mic isn't still holding the audio channel
+    if (listening && recognition) { try { recognition.stop(); } catch (e) {} }
     synth.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = speechRate;
@@ -812,12 +834,17 @@ TRAVEL / PACKING
     utter.onend = () => { if (onDone) onDone(); };
     utter.onerror = () => { if (onDone) onDone(); };
     synth.speak(utter);
+    // Chrome silently pauses long utterances after ~15s. Poking resume()
+    // on a timer keeps speech alive until it finishes.
+    if (speechKeepAlive) clearInterval(speechKeepAlive);
+    speechKeepAlive = setInterval(() => {
+      if (!synth.speaking) { clearInterval(speechKeepAlive); speechKeepAlive = null; return; }
+      try { synth.resume(); } catch (e) {}
+    }, 5000);
   }
 
   // ---- Voice: listening (speech-to-text) ----
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognition = null;
-  let listening = false;
 
   if (SR) {
     recognition = new SR();
@@ -850,6 +877,7 @@ TRAVEL / PACKING
   }
 
   micBtn.onclick = () => {
+    unlockSpeech();
     if (listening) { recognition.stop(); return; }
     startListening();
   };
@@ -902,6 +930,7 @@ TRAVEL / PACKING
   if (synth) synth.onvoiceschanged = () => { if (voicePanel.classList.contains("show")) renderVoiceList(); };
 
   voiceToggle.onclick = () => {
+    unlockSpeech();
     conversationMode = !conversationMode;
     voiceToggle.classList.toggle("on", conversationMode);
     if (conversationMode) {
@@ -1081,7 +1110,7 @@ Be conservative — only genuinely useful, durable items. Never include anything
 
 
   inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendMessage(); });
-  sendEl.onclick = () => sendMessage();
+  sendEl.onclick = () => { unlockSpeech(); sendMessage(); };
   inputEl.addEventListener("input", () => sendEl.classList.toggle("active", inputEl.value.trim().length > 0 || !!attached));
 
   function setLoading(v) {
@@ -1185,7 +1214,13 @@ Be conservative — only genuinely useful, durable items. Never include anything
         // In conversation mode, speak the reply then automatically listen again
         if (conversationMode) {
           setLoading(false);
-          speak(text, () => { if (conversationMode) startListening(); });
+          // Small delay lets mobile release the mic before speech starts —
+          // without it, Android Chrome silently drops the utterance.
+          setTimeout(() => {
+            speak(text, () => {
+              if (conversationMode) setTimeout(startListening, 400);
+            });
+          }, 350);
           return;
         }
       }
