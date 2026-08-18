@@ -115,12 +115,22 @@
      content) they silently swallow clicks on everything underneath.
      This keeps Blue Bonnet's own UI clickable regardless. */
   #onboarding, #voicePanel, #inputRow, header, #chatBody { position: relative; }
-  #onboarding.show, #voicePanel.show, #chatsPanel.show { position: fixed; }
+  #onboarding.show, #voicePanel.show, #chatsPanel.show, #dreamsPanel.show { position: fixed; }
   .nudge { background: var(--accent-soft); border: 1px solid var(--accent-line); }
   #voiceSettingsBtn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border);
     background: var(--panel2); color: var(--muted); cursor: pointer; display: flex; align-items: center;
     justify-content: center; flex-shrink: 0; }
   #voiceSettingsBtn:hover { color: var(--text); }
+  #dreamsPanel { display: none; position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.6);
+    align-items: center; justify-content: center; padding: 20px; }
+  #dreamsPanel.show { display: flex; }
+  .dream-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 11px 12px; margin-bottom: 9px; }
+  .dream-when { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .dream-line { font-size: 13px; line-height: 1.45; margin: 3px 0; }
+  .dream-line.dim { font-size: 11px; color: var(--muted); }
+  .dream-line.kept { color: var(--accent); }
+  .dream-line.dropped { color: var(--muted); text-decoration: line-through; }
   #chatsPanel { display: none; position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.6);
     align-items: center; justify-content: center; padding: 20px; }
   #chatsPanel.show { display: flex; }
@@ -232,6 +242,9 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
       <span>Conversation</span>
     </button>
+    <button id="dreamsBtn" title="Dream journal">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
     <button id="chatsBtn" title="Past chats">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
     </button>
@@ -239,6 +252,15 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </header>
+
+  <div id="dreamsPanel">
+    <div class="voice-card">
+      <h2>Dream journal</h2>
+      <p class="sub">What Blue Bonnet noticed while reflecting \u2014 including the ideas it threw out, and why.</p>
+      <div id="dreamList"></div>
+      <button id="dreamsCloseBtn" class="more-btn" style="margin-top:10px">Close</button>
+    </div>
+  </div>
 
   <div id="chatsPanel">
     <div class="voice-card">
@@ -360,6 +382,16 @@
     pushMessage: (m) => messages.push(m),
     clearMessages: () => { messages.length = 0; },
     saveCurrentChat: () => saveCurrentChat(),
+    recordPing: (p, raw, out) => recordPing(p, raw, out),
+    recordDream: (e) => recordDream(e),
+    affectOf: (t) => affectOf(t),
+    chooseDreamPair: () => chooseDreamPair(),
+    dreamTick: () => dreamTick(),
+    forceIdle: () => { lastActivity = 0; memory.lastDream = null; },
+    renderDreams: () => renderDreams(),
+    pingCoupling: (ids) => pingCoupling(ids),
+    capPingsToReality: () => capPingsToReality(),
+    amplitudeOf: (n) => amplitudeOf(n),
     openChat: (id) => openChat(id),
     newChat: () => newChat(),
     deleteChat: (id) => deleteChat(id),
@@ -387,7 +419,7 @@
   // swallow every click on the page. Neutralise any that aren't ours.
   function disarmOverlays() {
     document.querySelectorAll("body > div, body > button").forEach(function (el) {
-      if (el.closest("#onboarding, #voicePanel, #chatsPanel, #chatBody, #inputRow, header, #attachPreview")) return;
+      if (el.closest("#onboarding, #voicePanel, #chatsPanel, #dreamsPanel, #chatBody, #inputRow, header, #attachPreview")) return;
       if (el.id && /^(onboarding|voicePanel|chatBody|inputRow|attachPreview)$/.test(el.id)) return;
       var cs = window.getComputedStyle(el);
       if (cs.position === "fixed" && cs.pointerEvents !== "none") {
@@ -984,6 +1016,108 @@ BOUNDARIES
   const EPISODE_BUDGET_CHARS = 600000;   // ~600KB of raw conversation
   const EPISODE_MAX = 400;
 
+
+  // ============================================================
+  // AFFECT — the emotional charge on a memory
+  //
+  // Human consolidation isn't neutral. What gets replayed and knitted
+  // together in sleep is weighted by how much it MATTERED, not by how
+  // recent it was — emotional salience tags an experience for
+  // consolidation. So every episode carries a charge, and dreaming
+  // preferentially replays the ones that carried weight.
+  //
+  // This is a word-level read, not a real emotion model: crude, local,
+  // free, and honest about being a heuristic. It gets valence (is this
+  // heavy or light) and arousal (how loud) roughly right, which is all the
+  // dream pass needs to decide what to revisit.
+  // ============================================================
+  const AFFECT_LEX = {
+    // heavy / low valence
+    overwhelmed:[-.8,.9], exhausted:[-.7,.6], drowning:[-.9,.9], stuck:[-.6,.5],
+    behind:[-.6,.6], failing:[-.8,.7], failed:[-.8,.6], useless:[-.9,.6],
+    hate:[-.8,.8], angry:[-.7,.9], furious:[-.9,1], scared:[-.7,.8],
+    anxious:[-.7,.8], panic:[-.9,1], worried:[-.6,.6], dread:[-.8,.7],
+    ashamed:[-.8,.6], embarrassed:[-.6,.5], guilty:[-.7,.5], sorry:[-.4,.3],
+    tired:[-.5,.3], lonely:[-.7,.5], sad:[-.7,.4], crying:[-.8,.7],
+    frustrated:[-.7,.8], stressed:[-.7,.8], hopeless:[-.9,.5], numb:[-.6,.2],
+    forgot:[-.4,.4], forgetting:[-.4,.4], late:[-.5,.6], mess:[-.5,.5],
+    // light / high valence
+    proud:[.8,.7], excited:[.8,.9], happy:[.8,.6], relieved:[.7,.5],
+    finally:[.6,.7], did:[.4,.4], done:[.6,.5], finished:[.7,.6],
+    love:[.8,.7], good:[.5,.3], better:[.6,.4], easier:[.6,.3],
+    working:[.5,.4], progress:[.6,.5], grateful:[.7,.4], calm:[.6,.1],
+    // loud regardless of direction
+    never:[0,.6], always:[0,.6], cant:[-.5,.6], "can't":[-.5,.6],
+    everything:[0,.6], nothing:[-.4,.6], why:[-.2,.5],
+  };
+
+  function affectOf(text) {
+    const words = String(text || "").toLowerCase().split(/[^a-z']+/);
+    let v = 0, a = 0, n = 0;
+    words.forEach((wd) => {
+      const hit = AFFECT_LEX[wd];
+      if (!hit) return;
+      v += hit[0]; a += hit[1]; n++;
+    });
+    // Emphasis is arousal too: shouting and repeated punctuation.
+    const shout = (String(text).match(/[A-Z]{3,}|!{2,}|\?{2,}/g) || []).length;
+    if (!n && !shout) return { valence: 0, arousal: 0, hits: 0 };
+    return {
+      valence: n ? Math.max(-1, Math.min(1, v / n)) : 0,
+      arousal: Math.max(0, Math.min(1, (n ? a / n : 0) + shout * 0.15)),
+      hits: n + shout,
+    };
+  }
+
+  // Two memories "feel the same" when their charge is close, regardless of
+  // what they're about. That similarity is what the dream pass reaches for.
+  function affectDistance(x, y) {
+    const dv = (x.valence || 0) - (y.valence || 0);
+    const da = (x.arousal || 0) - (y.arousal || 0);
+    return Math.sqrt(dv * dv + da * da);
+  }
+
+  function topicOverlap(a, b) {
+    const words = (t) => new Set(String(t || "").toLowerCase()
+      .split(/[^a-z0-9]+/).filter((x) => x.length > 3 && !STOPISH.has(x)));
+    const A = words(a), Bs = words(b);
+    if (!A.size || !Bs.size) return 0;
+    let hit = 0;
+    A.forEach((x) => { if (Bs.has(x)) hit++; });
+    return hit / Math.min(A.size, Bs.size);
+  }
+  const STOPISH = new Set(["that","this","with","have","just","really","about","would","could","there","then","them","they","what","when","from","been","because","think","know","like","want","need"]);
+
+  function episodeText(ep) {
+    return (ep.turns || []).map((t) => t.text).join(" ");
+  }
+
+  // Pick what to dream about: one episode that carried weight, and a distant
+  // one that FEELS like it but isn't about the same thing. That pairing is
+  // the whole point — topic-similar pairs tell you what you already know.
+  function chooseDreamPair() {
+    const eps = (memory.episodes || []).filter((e) => (e.turns || []).length);
+    if (eps.length < 2) return null;
+    const scored = eps.map((e) => {
+      const aff = e.affect || affectOf(episodeText(e));
+      e.affect = aff;
+      return { ep: e, aff, weight: aff.arousal + Math.abs(aff.valence) * 0.5 };
+    });
+    scored.sort((x, y) => y.weight - x.weight);
+    const anchor = scored[0];
+    if (anchor.weight <= 0) return null;          // nothing carried any charge
+
+    let best = null, bestScore = -1;
+    scored.slice(1).forEach((c) => {
+      const feelsSame = 1 - Math.min(1, affectDistance(anchor.aff, c.aff));
+      const sameTopic = topicOverlap(episodeText(anchor.ep), episodeText(c.ep));
+      const score = feelsSame - sameTopic * 1.4;   // similar feeling, different subject
+      if (score > bestScore) { bestScore = score; best = c; }
+    });
+    if (!best || bestScore <= 0) return null;
+    return { anchor, other: best, score: bestScore };
+  }
+
   function recordEpisode(turns) {
     if (!turns || !turns.length) return;
     memory.episodes = memory.episodes || [];
@@ -991,6 +1125,8 @@ BOUNDARIES
       id: "e" + Date.now() + Math.random().toString(36).slice(2, 6),
       at: Date.now(),
       turns: turns.map((t) => ({ role: t.role, text: String(t.text || "").slice(0, 4000) })),
+      // Charge is read from what the PERSON said, not from the replies.
+      affect: affectOf(turns.filter((t) => t.role === "user").map((t) => t.text).join(" ")),
     });
     pruneEpisodes();
   }
@@ -1071,6 +1207,104 @@ BOUNDARIES
   /* Observing a batch: anything already known is reinforced, anything new
      is added, and everything in the batch is linked to everything else in
      it — that co-occurrence is where resonance comes from. */
+
+  // ============================================================
+  // ENTANGLED PINGS — where a dream idea meets a real moment
+  //
+  // Reflection can produce an idea that no single exchange shows. On its
+  // own that is just a plausible-sounding guess, and a confident guess
+  // about how someone's mind works is the last thing this product should
+  // manufacture.
+  //
+  // So an idea only becomes a memory if it PINGS: it has to land on an
+  // actual moment, quoted verbatim from the raw conversation. The quote is
+  // checked against the transcript locally. If the words aren't really
+  // there, the idea is discarded — the model doesn't get to invent its own
+  // evidence.
+  //
+  // What survives is entangled with the moments it pinged. Its amplitude is
+  // coupled to theirs: reinforce the lived experience and the idea rises
+  // with it; let the experience fade and the idea fades faster. An idea can
+  // never be more strongly held than the reality it came from. That
+  // coupling is the filter — ideas that keep meeting life stay, and ideas
+  // that stop meeting life let go of themselves.
+  // ============================================================
+  const PING_COUPLING = 0.6;    // share of a partner's lift that carries over
+  const PING_BIRTH = 0.45;      // born quieter than a heard fact (0.62)
+
+  function normForPing(t) {
+    return String(t || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  // The grounding check. A ping must quote something the person actually
+  // said, not a paraphrase of it.
+  function quoteIsReal(quote, haystack) {
+    const q = normForPing(quote);
+    if (q.length < 12) return false;          // too short to mean anything
+    return normForPing(haystack).indexOf(q) !== -1;
+  }
+
+  function recordPing(ping, rawText, out) {
+    const why = (r) => { if (out) out.reason = r; return null; };
+    if (!ping || !ping.idea || !ping.moment) return why("incomplete \u2014 no idea or no moment");
+    if (!quoteIsReal(ping.moment, rawText)) return why("the quoted moment isn't in the transcript \u2014 invented or paraphrased");
+
+    const partners = [];
+    (ping.threads || []).forEach((t) => {
+      const key = noteKey(t);
+      const f = memory.facts.find((x) => noteKey(x.text) === key);
+      if (f) partners.push(f.id);
+    });
+    if (!partners.length) return why("nothing real to entangle with \u2014 those threads aren't in memory");
+
+    const key = noteKey(ping.idea);
+    if ((memory.insights || []).some((x) => noteKey(x.text) === key)) return why("already noticed this");
+
+    const now = Date.now();
+    const node = {
+      id: "p" + now + Math.random().toString(36).slice(2, 6),
+      text: String(ping.idea).trim(),
+      moment: String(ping.moment).trim(),      // the real thing it landed on
+      entangled: partners,                     // amplitude is coupled to these
+      origin: "ping",
+      createdAt: now, amplitude: PING_BIRTH, lastHeard: now, hits: 1, dismissed: false,
+    };
+    memory.insights.push(node);
+    return node;
+  }
+
+  // Called whenever real facts are reinforced. Anything entangled with them
+  // moves too — that is the whole mechanism.
+  function pingCoupling(touchedIds) {
+    const now = Date.now();
+    const touched = new Set(touchedIds || []);
+    (memory.insights || []).forEach((node) => {
+      if (node.origin !== "ping" || node.dismissed) return;
+      if (!(node.entangled || []).some((id) => touched.has(id))) return;
+      const lift = RESONANCE_GAIN * PING_COUPLING * 2;
+      node.amplitude = Math.min(1, amplitudeOf(node, now) + lift);
+      node.lastHeard = now;
+      node.hits = (node.hits || 0) + 1;
+    });
+    capPingsToReality();
+  }
+
+  // An idea can never be held more firmly than the experience behind it.
+  function capPingsToReality() {
+    const now = Date.now();
+    (memory.insights || []).forEach((node) => {
+      if (node.origin !== "ping") return;
+      const live = (node.entangled || [])
+        .map((id) => memory.facts.find((f) => f.id === id))
+        .filter(Boolean);
+      if (!live.length) { node.amplitude = 0; return; }   // reality gone, idea goes
+      const ceiling = Math.max.apply(null, live.map((f) => amplitudeOf(f, now)));
+      if (amplitudeOf(node, now) > ceiling) node.amplitude = ceiling;
+    });
+    memory.insights = (memory.insights || [])
+      .filter((x) => x.origin !== "ping" || x.dismissed || amplitudeOf(x) > FORGET_FLOOR);
+  }
+
   function observeFacts(texts) {
     const now = Date.now();
     const touched = [];
@@ -1111,6 +1345,9 @@ BOUNDARIES
     // Let go of what's genuinely faded. Nothing is capped by count —
     // memory is pruned by whether it still resonates, not by age rank.
     memory.facts = memory.facts.filter((f) => amplitudeOf(f) > FORGET_FLOOR);
+
+    // Anything entangled with what was just re-heard rises with it.
+    pingCoupling(touched.map((t) => t.id));
   }
 
   /* Facts currently loud enough to be worth saying, strongest first. */
@@ -1986,7 +2223,9 @@ Be conservative — only genuinely useful, durable items.`,
           max_tokens: 400,
           system: `Below is a stretch of real conversation with one person, followed by threads that keep recurring. Read the ACTUAL conversation — the threads only point at where to look. Say what you now understand that no single exchange shows on its own.
 
-Return ONLY valid JSON: {"insights": ["..."]}
+Return ONLY valid JSON: {"insights": ["..."], "pings": [{"idea":"...","moment":"<exact words from the conversation above>","threads":["<exact thread text>"]}]}
+
+A "ping" is different from an insight. Take two threads that rarely appear together and ask what could link them — then find the ONE moment in the conversation above where that link actually shows. "moment" MUST be a verbatim span copied from the conversation, word for word. It is checked. If you cannot copy real words, leave pings empty. Do not paraphrase, do not compose a likely-sounding quote. At most 1 ping, and empty is usually right.
 
 Rules:
 - At most 2. Return an empty array if nothing genuine emerges — that is the right answer more often than not.
@@ -2016,6 +2255,27 @@ Rules:
           amplitude: 0.7, lastHeard: now, hits: 1, dismissed: false,
         });
       });
+      // Pings are checked against the transcript before they can exist.
+      const pingLog = [];
+      (parsed.pings || []).slice(0, 1).forEach((ping) => {
+        const out = {};
+        const node = recordPing(ping, rawText, out);
+        pingLog.push({
+          idea: (ping && ping.idea) || "(no idea given)",
+          moment: node ? node.moment : ((ping && ping.moment) || ""),
+          kept: !!node,
+          reason: node ? "" : (out.reason || "rejected"),
+        });
+      });
+      capPingsToReality();
+
+      recordDream({
+        readChars: rawText.length,
+        looked: clusters.slice(0, 3).map((g) => g[0] && g[0].text).filter(Boolean),
+        insights: (parsed.insights || []).filter(Boolean).map(String),
+        pings: pingLog,
+      });
+
       memory.insights = (memory.insights || []).slice(-24);
       saveMemory();
     } catch (e) {
@@ -2442,6 +2702,228 @@ Rules:
       c.msgs.forEach((m) => { messages.push({ role: m.role, content: m.text }); render(m.role, m.text); });
     }
   })();
+
+
+  // ============================================================
+  // DREAM JOURNAL
+  //
+  // Every reflection pass gets written down, including the ones that came
+  // to nothing. A dream that produced no insight, or an idea thrown out
+  // because its quote was invented, says more about whether this is working
+  // than a tidy list of hits would.
+  // ============================================================
+  const DREAM_MAX = 40;
+
+  function dreams() {
+    if (!Array.isArray(memory.dreams)) memory.dreams = [];
+    return memory.dreams;
+  }
+
+  function recordDream(entry) {
+    dreams().unshift(Object.assign({ id: "d" + Date.now().toString(36), at: Date.now() }, entry));
+    memory.dreams = dreams().slice(0, DREAM_MAX);
+  }
+
+  function renderDreams() {
+    const list = document.getElementById("dreamList");
+    if (!list) return;
+    list.innerHTML = "";
+    const all = dreams();
+    if (!all.length) {
+      const p = document.createElement("p");
+      p.className = "sub";
+      p.textContent = "Nothing yet. Blue Bonnet reflects in the background once there's enough conversation to reflect on.";
+      list.appendChild(p);
+      return;
+    }
+    all.forEach((d) => {
+      const card = document.createElement("div");
+      card.className = "dream-card";
+      const when = document.createElement("div");
+      when.className = "dream-when";
+      when.textContent = new Date(d.at).toLocaleString() + " \u00b7 read " + (d.readChars || 0) + " characters";
+      card.appendChild(when);
+
+      if (d.looked && d.looked.length) {
+        const l = document.createElement("div");
+        l.className = "dream-line dim";
+        l.textContent = "Looked at: " + d.looked.join(", ");
+        card.appendChild(l);
+      }
+      (d.insights || []).forEach((t) => {
+        const el = document.createElement("div");
+        el.className = "dream-line";
+        el.textContent = "\u25c7 " + t;
+        card.appendChild(el);
+      });
+      (d.pings || []).forEach((pg) => {
+        const el = document.createElement("div");
+        el.className = "dream-line " + (pg.kept ? "kept" : "dropped");
+        el.textContent = (pg.kept ? "\u25c6 " : "\u00d7 ") + pg.idea;
+        card.appendChild(el);
+        const sub = document.createElement("div");
+        sub.className = "dream-line dim";
+        sub.textContent = pg.kept ? "landed on: \u201c" + pg.moment + "\u201d" : "dropped \u2014 " + pg.reason;
+        card.appendChild(sub);
+      });
+      if (!(d.insights || []).length && !(d.pings || []).length) {
+        const el = document.createElement("div");
+        el.className = "dream-line dim";
+        el.textContent = d.note || "Nothing came of this one.";
+        card.appendChild(el);
+      }
+      list.appendChild(card);
+    });
+  }
+
+  function openDreams() { renderDreams(); document.getElementById("dreamsPanel").classList.add("show"); }
+  function closeDreams() { document.getElementById("dreamsPanel").classList.remove("show"); }
+
+  (function wireDreams() {
+    const b = document.getElementById("dreamsBtn");
+    if (b) b.onclick = openDreams;
+    const c = document.getElementById("dreamsCloseBtn");
+    if (c) c.onclick = closeDreams;
+  })();
+
+
+  // ============================================================
+  // IDLE DREAMING
+  //
+  // Reflection used to be a chore on a timer. This is different: when the
+  // conversation stops, Blue Bonnet goes quiet for a while and then starts
+  // revisiting things on its own — pulled toward whatever carried the most
+  // feeling, and looking for the older memory that felt the same way.
+  //
+  // It only runs when idle, never mid-conversation, and it goes to the
+  // gateway rather than the paid path. That is the reason gateway-first
+  // matters beyond cost: dreaming has to be cheap enough to happen often.
+  // ============================================================
+  const IDLE_BEFORE_DREAM_MS = 4 * 60 * 1000;
+  const DREAM_COOLDOWN_MS = 40 * 60 * 1000;
+  let lastActivity = Date.now();
+  let dreaming = false;
+
+  function markAwake() { lastActivity = Date.now(); }
+  ["click", "keydown", "touchstart"].forEach((ev) =>
+    document.addEventListener(ev, markAwake, { passive: true }));
+
+  function canDream() {
+    if (dreaming || loading) return false;
+    if (Date.now() - lastActivity < IDLE_BEFORE_DREAM_MS) return false;
+    const last = memory.lastDream ? new Date(memory.lastDream).getTime() : 0;
+    if (Date.now() - last < DREAM_COOLDOWN_MS) return false;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+    return (memory.episodes || []).length >= 2;
+  }
+
+  async function dreamTick() {
+    if (!canDream()) return;
+    const pair = chooseDreamPair();
+    if (!pair) return;
+    dreaming = true;
+    memory.lastDream = new Date().toISOString();
+    try {
+      await dreamOn(pair);
+    } catch (e) {
+      // A dream that fails is just a dream that didn't happen.
+      console.log("dream skipped:", e && e.message);
+    } finally {
+      dreaming = false;
+      saveMemory();
+    }
+  }
+
+  function feelingWord(aff) {
+    const v = aff.valence || 0, a = aff.arousal || 0;
+    if (a < 0.25) return "flat";
+    if (v <= -0.5) return a > 0.7 ? "distressed" : "heavy";
+    if (v < 0) return "uneasy";
+    if (v >= 0.5) return a > 0.7 ? "elated" : "warm";
+    return "charged";
+  }
+
+  // Which durable memories does this pair actually touch? Coupling is the
+  // safety mechanism, so a dream with nothing to couple to is not worth
+  // having — and not worth spending a call to discover.
+  function threadsFor(pair) {
+    const text = episodeText(pair.anchor.ep) + " " + episodeText(pair.other.ep);
+    return (memory.facts || [])
+      .map((f) => ({ f, ov: topicOverlap(f.text, text) }))
+      .filter((x) => x.ov > 0)
+      .sort((x, y) => y.ov - x.ov)
+      .slice(0, 6)
+      .map((x) => x.f.text);
+  }
+
+  async function dreamOn(pair) {
+    const a = pair.anchor, b = pair.other;
+    const feel = feelingWord(a.aff);
+
+    const threads = threadsFor(pair);
+    if (!threads.length) {
+      // Nothing durable to anchor to yet. Write it down and spend nothing.
+      recordDream({ readChars: 0, felt: feel,
+        looked: ["a " + feel + " moment", "an older moment that felt the same"],
+        insights: [], pings: [],
+        note: "Nothing durable to anchor to yet — didn't dream on it." });
+      return;
+    }
+    const body = "=== A MOMENT THAT CARRIED WEIGHT (" + feel + ") ===\n"
+      + episodeText(a.ep).slice(0, 4000)
+      + "\n\n=== AN OLDER MOMENT THAT FELT SIMILAR, ABOUT SOMETHING ELSE ===\n"
+      + episodeText(b.ep).slice(0, 4000);
+
+    const system = "You are revisiting two moments from one person's conversations while they are away. "
+      + "They are about different things but they carried a similar feeling. That similarity is the only reason they are together here.\n\n"
+      + 'Return ONLY valid JSON: {"idea":"...","moment":"<exact words copied from above>"} or {} if nothing real connects them.\n\n'
+      + "Rules:\n"
+      + "- Look for what the FEELING has in common, then what situation produces that feeling for them. Not what the topics have in common.\n"
+      + '- "moment" must be copied word for word from the text above. It is checked against the transcript. If you cannot copy real words, return {}.\n' 
+      + "- Tentative language only: seems, tends to, might.\n"
+      + "- About a pattern and what would help, never a judgement of them and never a diagnosis.\n"
+      + "- {} is the right answer most of the time. Do not manufacture a connection.";
+
+    const raw = await dreamCall(system, body);
+    const m = raw && raw.match(/\{[\s\S]*\}/);
+    const parsed = m ? JSON.parse(m[0]) : {};
+
+    const log = { readChars: body.length, felt: feel,
+      looked: ["a " + feel + " moment", "an older moment that felt the same"],
+      insights: [], pings: [] };
+
+    if (parsed && parsed.idea && parsed.moment) {
+      const out = {};
+      const node = recordPing({ idea: parsed.idea, moment: parsed.moment, threads }, body, out);
+      log.pings.push({ idea: parsed.idea, moment: node ? node.moment : parsed.moment,
+                       kept: !!node, reason: node ? "" : (out.reason || "rejected") });
+      if (node) { node.felt = feel; capPingsToReality(); }
+    }
+    recordDream(log);
+  }
+
+  // Dreams go through the gateway. If the brain is unreachable the dream
+  // simply doesn't happen — it is never worth paying reserve rates for.
+  async function dreamCall(system, body) {
+    if (!kitReady()) throw new Error("no gateway");
+    const st = BBKit.status();
+    if (!st.gatewayReady) throw new Error("no gateway key");
+    const res = await fetch(st.gatewayUrl + "/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + GATEWAY_KEY, "x-app": "blue-bonnet-dream" },
+      body: JSON.stringify({ max_tokens: 300, temperature: 0.9,
+        messages: [{ role: "system", content: system }, { role: "user", content: body }] }),
+    });
+    if (!res.ok) throw new Error("gateway " + res.status);
+    const data = await res.json();
+    return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+  }
+
+  setInterval(dreamTick, 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") setTimeout(dreamTick, 2000);
+    else markAwake();
+  });
 
   async function sendMessage(preset) {
     const raw = (preset !== undefined ? preset : inputEl.value).trim();
