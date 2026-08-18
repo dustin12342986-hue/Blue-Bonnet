@@ -85,7 +85,10 @@ ck("HARD BOUNDARY survived failover",
    /never|not.*verdict|does not hand down/i.test(String(gwSys)), String(gwSys).slice(0, 80));
 ck("no [object Object] leaked", !/\[object Object\]/.test(String(gwSys)));
 const shown = w.document.getElementById("chatBody").textContent;
-ck("user is told it's the backup", /Gateway here/.test(shown) && shown.length > 0);
+ck("backup reply rendered", /Gateway here/.test(shown));
+ck("brain symbol marks the backup reply", /\u{1F9E0}/u.test(shown));
+ck("no paragraph of explanation attached", !/Brain building mode|running on your own gateway/i.test(shown),
+   shown.slice(-160));
 
 console.log("\n-- degradation: kit file missing entirely --");
 const dom2 = new JSDOM(

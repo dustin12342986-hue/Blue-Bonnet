@@ -2125,14 +2125,21 @@ Rules:
           maxTokens: 1000,
           onStatus: (st) => {
             const el = loadingRow.querySelector(".loading");
-            if (el) el.textContent = st + "...";
+            if (!el) return;
+            // "brain building mode" from the kit becomes the symbol alone.
+            el.textContent = /brain building/i.test(st) ? "\u{1F9E0}" : st + "...";
           },
         });
         text = r.text || "No response received.";
         usedBackup = !!r.usedBackup;
         if (usedBackup) {
           console.log("Blue Bonnet fell back to the gateway:", r.backupReason, r.primaryError);
-          text = BBKit.BACKUP_NOTICE + "\n\n" + text;
+          // Just the symbol. A paragraph explaining the routing every time
+          // is exactly the wall of text this product exists to avoid, and
+          // once you know what the brain means you don't need it re-read
+          // to you. The full wording is still BBKit.BACKUP_NOTICE for any
+          // app that wants it.
+          text = "\u{1F9E0}\n\n" + text;
         }
       } else {
         const res = await fetch(PROXY_URL, {
