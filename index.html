@@ -927,6 +927,7 @@ BOUNDARIES
   const chipsEl = document.getElementById("chips");
   let messages = [];
   let loading = false;
+  let brainMode = null;   // null = nothing answered yet
 
   // ============================================================
   // MEMORY + CALIBRATION
@@ -2036,7 +2037,9 @@ Rules:
 
   function setLoading(v) {
     loading = v;
-    statusEl.textContent = v ? "● THINKING" : "○ STANDBY";
+    // Idle shows which brain answered last, so the mode survives the reset
+    // that happens at the end of every turn.
+    statusEl.textContent = v ? "● THINKING" : (brainMode === null ? "○ STANDBY" : (brainMode ? "\u{1F9E0} BRAIN" : "○ RESERVE"));
     statusEl.style.color = v ? "var(--accent)" : "var(--muted)";
   }
 
@@ -2118,8 +2121,52 @@ Rules:
   // ------------------------------------------------------------
   function isTransient(err) {
     const m = String((err && err.message) || err || "");
+    // A misconfiguration dressed up as a 502 is not transient. The gateway
+    // returns 502 when every provider failed, including when a key was
+    // never set — retrying that just wastes a second and fails again.
+    if (/no [A-Z_]*API_KEY set|key does not match|decommissioned|invalid api key|credit balance/i.test(m)) return false;
     return /\b(429|500|502|503|504|529)\b/.test(m)
       || /rate.?limit|overloaded|timeout|failed to fetch|networkerror|load failed|aborted/i.test(m);
+  }
+
+  // ---- The brain: gateway first --------------------------------
+  // The gateway is the primary path, not the backup. It is where the
+  // ratings and logs that make this thing better over time actually live,
+  // and it costs nothing to run. Anthropic is held in reserve for when the
+  // gateway can't answer.
+  function gatewayFlatSystem(blocks) {
+    return blocks.map((b) => (b && b.text) || "").filter(Boolean).join("\n\n");
+  }
+
+  async function streamGateway(content, onDelta) {
+    if (!kitReady()) throw new Error("kit not loaded");
+    const st = BBKit.status();
+    if (!st.gatewayReady) throw new Error("gateway key not set");
+
+    const turns = [{ role: "system", content: gatewayFlatSystem(systemBlocks(content)) }];
+    messages.forEach((m) => {
+      const t = typeof m.content === "string"
+        ? m.content
+        : (Array.isArray(m.content) ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n") : "");
+      if (t) turns.push({ role: m.role === "assistant" ? "assistant" : "user", content: t });
+    });
+
+    const res = await fetch(st.gatewayUrl + "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer " + GATEWAY_KEY,
+        "x-app": "blue-bonnet",
+      },
+      body: JSON.stringify({ messages: turns, stream: true, max_tokens: 1000, temperature: 0.7 }),
+    });
+
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.text()).slice(0, 300); } catch (e) {}
+      throw new Error("gateway " + res.status + (detail ? ": " + detail : ""));
+    }
+    return readStream(res, onDelta, "gateway");
   }
 
   async function streamReply(content, onDelta) {
@@ -2140,6 +2187,13 @@ Rules:
       throw new Error("anthropic " + res.status + (detail ? ": " + detail : ""));
     }
 
+    return readStream(res, onDelta, "anthropic");
+  }
+
+  // Shared SSE reader. Understands both the Anthropic and OpenAI event
+  // shapes, and falls back to a plain JSON body when whatever answered
+  // isn't actually streaming.
+  async function readStream(res, onDelta, who) {
     // The Worker may not be the streaming one yet. A browser gives us a
     // res.body regardless, so checking for it is not enough — if what came
     // back isn't an event stream, read it as a normal JSON reply. Without
@@ -2175,17 +2229,37 @@ Rules:
         if (evt.type === "error") {
           throw new Error((evt.error && evt.error.message) || "stream error");
         }
+        // Anthropic shape.
         if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
           full += evt.delta.text;
           onDelta(full);
         }
+        // OpenAI shape, which is what the gateway speaks.
+        const oa = evt.choices && evt.choices[0] && evt.choices[0].delta;
+        if (oa && typeof oa.content === "string" && oa.content) {
+          full += oa.content;
+          onDelta(full);
+        }
       }
     }
-    if (!full) throw new Error("empty stream");
+    if (!full) throw new Error(who + ": empty stream");
     return full;
   }
 
   // A place to put words as they arrive.
+  // Which brain answered, shown once in the header rather than stamped on
+  // every message. Repeating it on each reply is noise once you know what
+  // it means.
+  function setBrainMode(onGateway) {
+    brainMode = onGateway;
+    const el = document.getElementById("statusText");
+    if (!el) return;
+    el.textContent = onGateway ? "\u{1F9E0} BRAIN" : "\u25cb RESERVE";
+    el.title = onGateway
+      ? "Running on your own gateway \u2014 the path that logs and improves over time."
+      : "Gateway unavailable, running on Anthropic as reserve.";
+  }
+
   function openReplyBubble() {
     const empty = document.getElementById("emptyState");
     if (empty) empty.remove();
@@ -2404,51 +2478,45 @@ Rules:
       let text = "";
       let bubble = null;
 
+      const paint = (t) => {
+        if (!bubble) { try { loadingRow.remove(); } catch (e) {} bubble = openReplyBubble(); }
+        bubble.set(t);
+      };
+
       try {
-        // Attempt 1: stream. One quiet retry if it's the transient kind.
+        // The brain first, with one quiet retry if it's the transient kind.
         try {
-          text = await streamReply(content, (t) => {
-            if (!bubble) { loadingRow.remove(); bubble = openReplyBubble(); }
-            bubble.set(t);
-          });
+          text = await streamGateway(content, paint);
+          setBrainMode(true);
         } catch (firstErr) {
           if (!isTransient(firstErr)) throw firstErr;
-          console.warn("transient, retrying once:", firstErr.message);
+          console.warn("gateway hiccup, retrying once:", firstErr.message);
           if (bubble) { bubble.remove(); bubble = null; }
           await new Promise((r) => setTimeout(r, 900));
-          text = await streamReply(content, (t) => {
-            if (!bubble) { try { loadingRow.remove(); } catch (e) {} bubble = openReplyBubble(); }
-            bubble.set(t);
-          });
+          text = await streamGateway(content, paint);
+          setBrainMode(true);
         }
-      } catch (streamErr) {
-        // Streaming is gone. If the kit is here, let the gateway catch it
-        // rather than showing the person an error.
+      } catch (gatewayErr) {
+        // Gateway is out. Hold Anthropic in reserve for exactly this.
+        console.warn("gateway unavailable, falling back to Anthropic:", gatewayErr.message);
         if (bubble) { bubble.remove(); bubble = null; }
-        if (!kitReady()) throw streamErr;
-        console.warn("direct call failed, trying gateway:", streamErr.message);
-        // The kit reports the LAST thing that broke ("all providers
-        // failed"), which buries the first thing that broke. The direct
-        // call's error carries the real status and body, so lead with it.
-        let r;
         try {
-          r = await BBKit.ask({
-            system: systemBlocks(content),
-            messages: messages.slice(),
-            maxTokens: 1000,
-            onStatus: (st) => {
-              const el = loadingRow.querySelector(".loading");
-              if (!el) return;
-              el.textContent = /brain building/i.test(st) ? "\u{1F9E0}" : st + "...";
-            },
-          });
-        } catch (kitErr) {
-          const e2 = new Error(streamErr.message);
-          e2.alsoTried = kitErr.message;
+          try {
+            text = await streamReply(content, paint);
+          } catch (firstReserveErr) {
+            // The reserve deserves the same one quiet retry the brain gets.
+            if (!isTransient(firstReserveErr)) throw firstReserveErr;
+            console.warn("reserve hiccup, retrying once:", firstReserveErr.message);
+            if (bubble) { bubble.remove(); bubble = null; }
+            await new Promise((r) => setTimeout(r, 900));
+            text = await streamReply(content, paint);
+          }
+          setBrainMode(false);
+        } catch (anthropicErr) {
+          const e2 = new Error(anthropicErr.message);
+          e2.alsoTried = "brain: " + gatewayErr.message;
           throw e2;
         }
-        text = r.text || "No response received.";
-        if (r.usedBackup) text = "\u{1F9E0}\n\n" + text;
       }
 
       if (bubble) bubble.remove();   // re-rendered properly below, with Listen
@@ -2481,10 +2549,32 @@ Rules:
       // written to stop.
       const raw = (e && e.message) ? e.message : String(e);
       const extra = e && e.alsoTried ? " | backup: " + e.alsoTried : "";
-      const why = "I couldn't get through just now \u2014 that's on my end, not yours.\n\n"
+
+      // Pull the human sentence out of the API's JSON. A raw error body with
+      // a request_id in it tells the person nothing and looks broken; the
+      // message inside it usually says exactly what to do.
+      let plain = raw;
+      try {
+        const j = raw.match(/\{[\s\S]*\}/);
+        const parsed = j ? JSON.parse(j[0]) : null;
+        if (parsed && parsed.error && parsed.error.message) plain = parsed.error.message;
+      } catch (ignore) {}
+
+      // A few causes are worth naming outright, because the fix is specific
+      // and it is not something the person did wrong.
+      let headline = "I couldn't get through just now \u2014 that's on my end, not yours.";
+      if (/credit balance|billing|quota/i.test(plain)) {
+        headline = "I'm out of API credit \u2014 that's a billing thing on my side, not anything you did.";
+      } else if (/rate.?limit|overloaded/i.test(plain)) {
+        headline = "Too many requests at once. Give it a minute and try again.";
+      } else if (/api.?key|401|403|authentication/i.test(plain)) {
+        headline = "My API key isn't being accepted. That's a setup problem on my side.";
+      }
+
+      const why = headline + "\n\n"
         + "If you're stuck and waiting on me: pick the one thing with a deadline, "
         + "and do the smallest first step of it. That works whether I answer or not.\n\n"
-        + "Details: " + raw + extra;
+        + "Details: " + plain + extra;
       render("assistant", why);
       console.error("Blue Bonnet error:", e);
     } finally {
