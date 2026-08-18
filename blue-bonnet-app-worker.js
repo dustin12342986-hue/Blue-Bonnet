@@ -50,6 +50,13 @@ export default {
       const body = await request.json();
       const requestedTokens = Number(body.max_tokens) || 1000;
 
+      // Streaming. Without it the client waits for the entire reply before
+      // showing a single word, which is why a normal answer felt like 15
+      // seconds — the model was not slow, the UI was silent. When the app
+      // asks for a stream we hand the upstream body straight back rather
+      // than buffering it here, or the Worker just re-creates the wait.
+      const wantsStream = body.stream === true;
+
       const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -68,8 +75,22 @@ export default {
             ? [{ type: "text", text: body.system, cache_control: { type: "ephemeral" } }]
             : body.system,
           messages: body.messages,
+          ...(wantsStream ? { stream: true } : {}),
         }),
       });
+
+      // Pipe the stream through untouched. Errors still arrive as JSON, so
+      // a failed streaming request is handled by the normal path below.
+      if (wantsStream && anthropicRes.ok && anthropicRes.body) {
+        return new Response(anthropicRes.body, {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        });
+      }
 
       const data = await anthropicRes.json();
 
