@@ -2140,9 +2140,15 @@ Rules:
       throw new Error("anthropic " + res.status + (detail ? ": " + detail : ""));
     }
 
-    // No ReadableStream (old browser, or a proxy that buffered it) — fall
-    // back to reading it as one JSON body rather than failing.
-    if (!res.body || !res.body.getReader) {
+    // The Worker may not be the streaming one yet. A browser gives us a
+    // res.body regardless, so checking for it is not enough — if what came
+    // back isn't an event stream, read it as a normal JSON reply. Without
+    // this the SSE parser finds no "data:" lines, throws "empty stream",
+    // and a perfectly good answer is thrown away.
+    const ctype = (res.headers && res.headers.get) ? (res.headers.get("content-type") || "") : "";
+    const isSSE = ctype.indexOf("event-stream") !== -1;
+
+    if (!isSSE || !res.body || !res.body.getReader) {
       const data = await res.json();
       if (data.error) throw new Error(data.error.message || "api error");
       const t = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
@@ -2420,17 +2426,27 @@ Rules:
         // rather than showing the person an error.
         if (bubble) { bubble.remove(); bubble = null; }
         if (!kitReady()) throw streamErr;
-        console.warn("stream failed, trying gateway:", streamErr.message);
-        const r = await BBKit.ask({
-          system: systemBlocks(content),
-          messages: messages.slice(),
-          maxTokens: 1000,
-          onStatus: (st) => {
-            const el = loadingRow.querySelector(".loading");
-            if (!el) return;
-            el.textContent = /brain building/i.test(st) ? "\u{1F9E0}" : st + "...";
-          },
-        });
+        console.warn("direct call failed, trying gateway:", streamErr.message);
+        // The kit reports the LAST thing that broke ("all providers
+        // failed"), which buries the first thing that broke. The direct
+        // call's error carries the real status and body, so lead with it.
+        let r;
+        try {
+          r = await BBKit.ask({
+            system: systemBlocks(content),
+            messages: messages.slice(),
+            maxTokens: 1000,
+            onStatus: (st) => {
+              const el = loadingRow.querySelector(".loading");
+              if (!el) return;
+              el.textContent = /brain building/i.test(st) ? "\u{1F9E0}" : st + "...";
+            },
+          });
+        } catch (kitErr) {
+          const e2 = new Error(streamErr.message);
+          e2.alsoTried = kitErr.message;
+          throw e2;
+        }
         text = r.text || "No response received.";
         if (r.usedBackup) text = "\u{1F9E0}\n\n" + text;
       }
@@ -2464,8 +2480,11 @@ Rules:
       // that hides the real cause, which is the whole failure the kit was
       // written to stop.
       const raw = (e && e.message) ? e.message : String(e);
-      const why = (kitReady() ? BBKit.explainError(e).message : "Couldn't reach Blue Bonnet right now.")
-        + "\n\nDetails: " + raw;
+      const extra = e && e.alsoTried ? " | backup: " + e.alsoTried : "";
+      const why = "I couldn't get through just now \u2014 that's on my end, not yours.\n\n"
+        + "If you're stuck and waiting on me: pick the one thing with a deadline, "
+        + "and do the smallest first step of it. That works whether I answer or not.\n\n"
+        + "Details: " + raw + extra;
       render("assistant", why);
       console.error("Blue Bonnet error:", e);
     } finally {
