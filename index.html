@@ -152,6 +152,13 @@
   .tsw-dark  { background: linear-gradient(160deg,#12151A 55%,#8B9AE8 55%); }
   .tsw-calm  { background: linear-gradient(160deg,#F7F7F7 55%,#2B2B2B 55%); }
   .theme-hint { font-size: 11.5px; color: var(--dim); line-height: 1.5; margin: 0 0 4px; }
+  .insight-item { display: flex; align-items: flex-start; gap: 10px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; margin-bottom: 8px; }
+  .insight-item p { margin: 0; font-size: 13px; line-height: 1.5; flex: 1; color: var(--text); }
+  .insight-item button { background: none; border: none; color: var(--dim); cursor: pointer;
+    font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
+  .insight-item button:hover { color: var(--text); }
+  .insight-empty { font-size: 12.5px; color: var(--dim); line-height: 1.5; margin: 0; }
   .sync-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
     margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
   .sync-title { font-size: 13px; color: var(--text); }
@@ -241,6 +248,12 @@
         <input type="range" id="rateSlider" min="0.6" max="1.4" step="0.05" />
         <span id="rateValue"></span>
       </div>
+      <div id="insightRow" style="display:none">
+        <h2 style="margin-top:24px">What I think I've noticed</h2>
+        <p class="theme-hint">These are guesses from patterns across conversations — not facts. Remove anything that's wrong or that you'd rather I didn't hold onto.</p>
+        <div id="insightList"></div>
+      </div>
+
       <div class="sync-row" id="syncRow">
         <div>
           <div class="sync-title">Memory sync</div>
@@ -291,6 +304,37 @@
 
 <script>
 (function () {
+  // Test hook. The harmonic memory maths (decay curves, resonance lifting,
+  // pruning thresholds) is easy to get subtly wrong and impossible to eyeball,
+  // so it's exposed for the test harness. Read-only handles to real functions —
+  // nothing here changes runtime behaviour.
+  window.__bb = {
+    get memory() { return memory; },
+    set memory(v) { memory = v; },
+    get defaultMemory() { return defaultMemory; },
+    observeFacts: (t) => observeFacts(t),
+    recordEpisode: (t) => recordEpisode(t),
+    recentRaw: (n) => recentRaw(n),
+    pruneEpisodes: () => pruneEpisodes(),
+    episodesSize: () => episodesSize(),
+    amplitudeOf: (n, t) => amplitudeOf(n, t),
+    halfLifeFor: (n) => halfLifeFor(n),
+    liveFacts: (l) => liveFacts(l),
+    resonantClusters: (m) => resonantClusters(m),
+    migrateMemory: () => migrateMemory(),
+    buildMemoryContext: () => buildMemoryContext(),
+    renderInsights: () => renderInsights(),
+    saveMemory: () => saveMemory(),
+    // The seam. Everything below buildMemoryContext used to be untestable
+    // from outside the IIFE, which is how a dead extraction path sat behind
+    // 36 passing tests: the suites drove the memory modules directly and
+    // never went through the function that feeds them.
+    updateMemoryFromConversation: () => updateMemoryFromConversation(),
+    systemBlocks: (q) => systemBlocks(q),
+    pushMessage: (m) => messages.push(m),
+    clearMessages: () => { messages.length = 0; },
+  };
+
   // ---- PWA install support ----
   // Registered first, before any other init. If something later in this
   // script throws on a particular device, install support still works —
@@ -847,18 +891,232 @@ BOUNDARIES
   const MEM_KEY = "bluebonnet-memory-v1";
   const defaultMemory = {
     profile: {},          // calibration answers
-    facts: [],            // durable things learned about the person
+    episodes: [],         // RAW conversation, full fidelity — see below
+    facts: [],            // harmonic notes distilled from aged-out episodes
+    insights: [],         // consolidated patterns, always shown as hypotheses
     openThreads: [],      // { text, firstMentioned, lastMentioned }
     lastVisit: null,
     visitCount: 0,
+    lastReflection: null,
   };
   let memory = defaultMemory;
+
+  /* ============================================================
+     HARMONIC MEMORY
+
+     A fact isn't a string in a list, it's a note with an amplitude.
+
+     - DECAY: amplitude falls off with time. Something mentioned once
+       months ago should not weigh the same as something raised on
+       Tuesday.
+     - REINFORCEMENT: hearing it again pushes amplitude back up, and
+       each repetition lengthens its half-life. Things that keep coming
+       back become durable; one-offs fade on their own.
+     - RESONANCE: facts observed together get linked. Reinforcing one
+       lifts its partners a little — sympathetic vibration. A cluster
+       that keeps ringing together is what an insight is made of.
+
+     Amplitude is never stored as a live value; it's computed from
+     lastHeard so the maths stays honest whether the app was open or
+     not for three weeks.
+     ============================================================ */
+  /* ------------------------------------------------------------
+     COMPRESS LATE, NOT EARLY
+
+     The previous design summarised every exchange immediately and threw
+     the original away, then later tried to find patterns in the summaries.
+     That's compression stacked on compression — the detail that would have
+     made an insight good is usually exactly what the first pass discarded,
+     because a summariser can't know in advance which detail will matter in
+     three weeks.
+
+     So: recent conversation is kept RAW at full fidelity. Reflection reads
+     the real thing. Distillation into harmonic notes only happens when an
+     episode is finally aged out for space — compression at the last
+     possible moment rather than the first.
+     ------------------------------------------------------------ */
+  const EPISODE_BUDGET_CHARS = 600000;   // ~600KB of raw conversation
+  const EPISODE_MAX = 400;
+
+  function recordEpisode(turns) {
+    if (!turns || !turns.length) return;
+    memory.episodes = memory.episodes || [];
+    memory.episodes.push({
+      id: "e" + Date.now() + Math.random().toString(36).slice(2, 6),
+      at: Date.now(),
+      turns: turns.map((t) => ({ role: t.role, text: String(t.text || "").slice(0, 4000) })),
+    });
+    pruneEpisodes();
+  }
+
+  function episodesSize() {
+    try { return JSON.stringify(memory.episodes || []).length; } catch (e) { return 0; }
+  }
+
+  /* Only when we genuinely run out of room does an episode get compressed —
+     and it's distilled into harmonic notes on the way out rather than simply
+     deleted, so the signal degrades gracefully instead of vanishing. */
+  function pruneEpisodes() {
+    memory.episodes = memory.episodes || [];
+    while (memory.episodes.length > EPISODE_MAX || episodesSize() > EPISODE_BUDGET_CHARS) {
+      const oldest = memory.episodes.shift();
+      if (!oldest) break;
+      distillEpisode(oldest);
+    }
+  }
+
+  /* Cheap local distillation — no API call. Pulls the user's own words as
+     the durable trace, since those carry the signal better than the
+     assistant's replies. */
+  function distillEpisode(ep) {
+    const userTurns = (ep.turns || []).filter((t) => t.role === "user").map((t) => t.text);
+    if (!userTurns.length) return;
+    const gist = userTurns.join(" ").replace(/\s+/g, " ").trim().slice(0, 220);
+    if (gist.length < 12) return;
+    observeFacts([gist]);
+  }
+
+  /* What reflection actually reads: real conversation, most recent first,
+     bounded so the request stays sane. */
+  function recentRaw(maxChars) {
+    const cap = maxChars || 14000;
+    const out = [];
+    let used = 0;
+    for (let i = (memory.episodes || []).length - 1; i >= 0; i--) {
+      const ep = memory.episodes[i];
+      const when = new Date(ep.at).toISOString().slice(0, 10);
+      const block = "[" + when + "]\n" + (ep.turns || [])
+        .map((t) => (t.role === "user" ? "Them: " : "You: ") + t.text).join("\n");
+      if (used + block.length > cap) break;
+      out.unshift(block);
+      used += block.length;
+    }
+    return out.join("\n\n");
+  }
+
+  const BASE_HALF_LIFE_DAYS = 21;   // one mention halves in three weeks
+  const SURFACE_FLOOR = 0.22;       // below this it stops entering context
+  const FORGET_FLOOR  = 0.05;       // below this it's genuinely let go
+  const RESONANCE_GAIN = 0.14;      // how much a partner lifts by
+
+  function halfLifeFor(note) {
+    // Repetition consolidates: the more often it's been heard, the slower
+    // it fades. log2 so this flattens out rather than becoming permanent.
+    return BASE_HALF_LIFE_DAYS * (1 + Math.log2(Math.max(1, note.hits || 1)));
+  }
+  function amplitudeOf(note, now) {
+    const t = now || Date.now();
+    const days = Math.max(0, (t - (note.lastHeard || t)) / 86400000);
+    const decayed = (note.amplitude != null ? note.amplitude : 1) *
+      Math.pow(0.5, days / halfLifeFor(note));
+    return Math.max(0, Math.min(1, decayed));
+  }
+  function noteKey(text) {
+    return String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim().slice(0, 90);
+  }
+
+  function reinforce(note, amount) {
+    const now = Date.now();
+    note.amplitude = Math.min(1, amplitudeOf(note, now) + (amount == null ? 0.4 : amount));
+    note.lastHeard = now;
+    note.hits = (note.hits || 0) + 1;
+  }
+
+  /* Observing a batch: anything already known is reinforced, anything new
+     is added, and everything in the batch is linked to everything else in
+     it — that co-occurrence is where resonance comes from. */
+  function observeFacts(texts) {
+    const now = Date.now();
+    const touched = [];
+    (texts || []).forEach((text) => {
+      if (!text || !String(text).trim()) return;
+      const key = noteKey(text);
+      let note = memory.facts.find((f) => noteKey(f.text) === key);
+      if (note) {
+        reinforce(note);
+      } else {
+        note = { id: "n" + now + Math.random().toString(36).slice(2, 7),
+                 text: String(text).trim(), amplitude: 0.62,
+                 firstHeard: now, lastHeard: now, hits: 1, links: {} };
+        memory.facts.push(note);
+      }
+      touched.push(note);
+    });
+
+    // Link every pair in this batch, and let each lift its partners a little.
+    touched.forEach((a) => {
+      touched.forEach((b) => {
+        if (a.id === b.id) return;
+        a.links = a.links || {};
+        a.links[b.id] = (a.links[b.id] || 0) + 1;
+      });
+    });
+    touched.forEach((a) => {
+      Object.keys(a.links || {}).forEach((id) => {
+        if (touched.some((t) => t.id === id)) return;   // already reinforced directly
+        const partner = memory.facts.find((f) => f.id === id);
+        if (!partner) return;
+        const strength = Math.min(1, (a.links[id] || 1) / 4);
+        partner.amplitude = Math.min(1, amplitudeOf(partner) + RESONANCE_GAIN * strength);
+        partner.lastHeard = Math.max(partner.lastHeard || 0, now - 43200000); // half-day nudge, not a full re-hear
+      });
+    });
+
+    // Let go of what's genuinely faded. Nothing is capped by count —
+    // memory is pruned by whether it still resonates, not by age rank.
+    memory.facts = memory.facts.filter((f) => amplitudeOf(f) > FORGET_FLOOR);
+  }
+
+  /* Facts currently loud enough to be worth saying, strongest first. */
+  function liveFacts(limit) {
+    return memory.facts
+      .map((f) => ({ f, a: amplitudeOf(f) }))
+      .filter((x) => x.a >= SURFACE_FLOOR)
+      .sort((a, b) => b.a - a.a)
+      .slice(0, limit || 14);
+  }
+
+  /* A cluster is a fact plus whatever keeps showing up alongside it.
+     Strong clusters are the raw material for an insight. */
+  function resonantClusters(minSize) {
+    const seen = new Set();
+    const out = [];
+    liveFacts(30).forEach(({ f }) => {
+      if (seen.has(f.id)) return;
+      const partners = Object.keys(f.links || {})
+        .filter((id) => (f.links[id] || 0) >= 2)
+        .map((id) => memory.facts.find((x) => x.id === id))
+        .filter((x) => x && amplitudeOf(x) >= SURFACE_FLOOR);
+      if (partners.length + 1 >= (minSize || 3)) {
+        const group = [f].concat(partners);
+        group.forEach((g) => seen.add(g.id));
+        out.push(group);
+      }
+    });
+    return out;
+  }
+
+  function migrateMemory() {
+    // v1 stored facts as plain strings. Give them a starting amplitude so
+    // nothing already learned is thrown away.
+    if (Array.isArray(memory.facts) && memory.facts.some((f) => typeof f === "string")) {
+      const now = Date.now();
+      memory.facts = memory.facts.map((f, i) =>
+        typeof f === "string"
+          ? { id: "m" + now + i, text: f, amplitude: 0.55,
+              firstHeard: now, lastHeard: now, hits: 1, links: {} }
+          : f);
+    }
+    if (!Array.isArray(memory.insights)) memory.insights = [];
+    if (!Array.isArray(memory.episodes)) memory.episodes = [];
+  }
 
   function loadMemory() {
     try {
       const raw = localStorage.getItem(MEM_KEY);
       if (raw) memory = Object.assign({}, defaultMemory, JSON.parse(raw));
     } catch (e) {}
+    migrateMemory();
   }
   function saveMemory() {
     try { localStorage.setItem(MEM_KEY, JSON.stringify(memory)); } catch (e) {}
@@ -1095,8 +1353,24 @@ BOUNDARIES
     if (p.brain === "autistic") parts.push("They're autistic — prioritize clarity, predictability, and literal unambiguous language.");
     if (p.brain === "audhd") parts.push("They're AuDHD — they experience genuinely contradictory needs (novelty vs. sameness). Don't treat that as confusion on their part.");
 
-    if (memory.facts.length) {
-      parts.push("Things you've learned about them in past conversations: " + memory.facts.slice(-12).join("; ") + ".");
+    // Loudest first — what keeps coming up, not merely what was said last.
+    const live = liveFacts(12);
+    if (live.length) {
+      parts.push("Things you've learned about them in past conversations, strongest first: " +
+        live.map(({ f, a }) => {
+          const days = Math.floor((Date.now() - (f.lastHeard || Date.now())) / 86400000);
+          const recency = days <= 0 ? "today" : days === 1 ? "yesterday" : days + "d ago";
+          const weight = a >= 0.7 ? "recurring" : a >= 0.45 ? "familiar" : "faint";
+          return `${f.text} [${weight}, ${f.hits || 1}x, last ${recency}]`;
+        }).join("; ") + ".");
+      parts.push("Weight these: 'recurring' matters and is worth acting on; 'faint' is a passing detail — mention it lightly or not at all.");
+    }
+
+    const shown = (memory.insights || []).filter((x) => !x.dismissed).slice(-4);
+    if (shown.length) {
+      parts.push("Patterns you think you've noticed across several conversations — these are HYPOTHESES, not facts: " +
+        shown.map((x) => x.text).join("; ") + ".");
+      parts.push("Hold them loosely. You may offer one if it's genuinely useful, framed as something you've noticed and could be wrong about — never as a verdict on who they are, and never unprompted more than once.");
     }
     if (memory.openThreads.length) {
       const open = memory.openThreads.slice(-5).map((t) => {
@@ -1310,6 +1584,7 @@ BOUNDARIES
   document.getElementById("voiceSettingsBtn").onclick = () => {
     voicePanel.classList.add("show");
     renderVoiceList();
+    renderInsights();
   };
   // ---- Theme ----
   const THEME_KEY = "bluebonnet-theme";
@@ -1338,6 +1613,41 @@ BOUNDARIES
     if (synth) synth.cancel();
     voicePanel.classList.remove("show");
   };
+
+  // ---- Insights panel ----
+  // Everything Blue Bonnet has inferred is visible here and can be removed.
+  // A dismissed insight is kept (flagged) rather than deleted, so the
+  // reflection pass knows not to propose it again.
+  function renderInsights() {
+    const row = document.getElementById("insightRow");
+    const list = document.getElementById("insightList");
+    if (!row || !list) return;
+    const shown = (memory.insights || []).filter((x) => !x.dismissed);
+    const everHad = (memory.insights || []).length > 0;
+    if (!everHad) { row.style.display = "none"; return; }
+    row.style.display = "block";
+    if (!shown.length) {
+      list.innerHTML = '<p class="insight-empty">Nothing right now — I only note something when it comes up across several conversations.</p>';
+      return;
+    }
+    list.innerHTML = "";
+    shown.slice().reverse().forEach((x) => {
+      const el = document.createElement("div");
+      el.className = "insight-item";
+      const p = document.createElement("p");
+      p.textContent = x.text;
+      const b = document.createElement("button");
+      b.textContent = "Remove";
+      b.title = "I won't bring this up again";
+      b.onclick = () => {
+        x.dismissed = true;
+        saveMemory();
+        renderInsights();
+      };
+      el.appendChild(p); el.appendChild(b);
+      list.appendChild(el);
+    });
+  }
 
   // ---- Sync UI ----
   function updateSyncUI() {
@@ -1538,6 +1848,16 @@ BOUNDARIES
 
   async function updateMemoryFromConversation() {
     if (messages.length < 2) return;
+
+    // Keep the real exchange at full fidelity first. Everything downstream
+    // reads this rather than a summary of it.
+    recordEpisode(messages.slice(-6).map((m) => ({
+      role: m.role,
+      text: typeof m.content === "string"
+        ? m.content
+        : (m.content.find((c) => c.type === "text") || {}).text || "[attachment]",
+    })));
+
     try {
       const recent = messages.slice(-6).map((m) => {
         const content = typeof m.content === "string"
@@ -1556,20 +1876,18 @@ BOUNDARIES
 
 "facts" = stable things worth remembering about this person long-term (their situation, what they struggle with, what works for them, people/pets/jobs in their life). Not passing details. Not things already obvious. Empty array if nothing new.
 "openThreads" = specific unfinished tasks or worries they raised that they haven't resolved. Short phrases. Empty array if none.
-Be conservative — only genuinely useful, durable items. Never include anything about their relationship conflicts or mental health crises.`,
+Be conservative — only genuinely useful, durable items.`,
           messages: [{ role: "user", content: recent }],
         }),
       });
       const data = await res.json();
       const raw = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
-      const jsonMatch = raw.match(/\\{[\\s\\S]*\\}/);
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return;
       const parsed = JSON.parse(jsonMatch[0]);
 
-      (parsed.facts || []).forEach((f) => {
-        if (f && !memory.facts.includes(f)) memory.facts.push(f);
-      });
-      memory.facts = memory.facts.slice(-30);
+      // Facts heard together in one pass resonate together.
+      observeFacts(parsed.facts || []);
 
       (parsed.openThreads || []).forEach((t) => {
         if (!t) return;
@@ -1580,8 +1898,82 @@ Be conservative — only genuinely useful, durable items. Never include anything
       memory.openThreads = memory.openThreads.slice(-10);
 
       saveMemory();
+      maybeReflect();
     } catch (e) {
       // Silent by design — memory is a bonus, never a blocker
+    }
+  }
+
+  /* ---- Reflection ---------------------------------------------------
+     Consolidation. Runs at most once a day, and only when clusters are
+     actually ringing together — there's nothing to consolidate from three
+     unrelated facts. Produces hypotheses, never conclusions, and every one
+     is visible and dismissible by the person in Settings. Inference the
+     person can't see or correct is the wrong shape for this product. */
+  const REFLECT_MIN_HOURS = 20;
+
+  async function maybeReflect() {
+    const last = memory.lastReflection ? new Date(memory.lastReflection).getTime() : 0;
+    if (Date.now() - last < REFLECT_MIN_HOURS * 3600000) return;
+    const clusters = resonantClusters(3);
+    // Raw material alone is enough to reflect on — clusters sharpen the aim
+    // but aren't required, or nothing is ever noticed in the early weeks.
+    if (!clusters.length && (memory.episodes || []).length < 4) return;
+    memory.lastReflection = new Date().toISOString();
+    saveMemory();
+
+    // Clusters say WHERE to look; the raw conversation is WHAT it reads.
+    const rawText = recentRaw(14000);
+    const clusterText = clusters.slice(0, 3).map((group, i) =>
+      "Cluster " + (i + 1) + ":\n" + group.map((f) =>
+        "- " + f.text + " (heard " + (f.hits || 1) + "x)").join("\n")
+    ).join("\n\n");
+
+    const dismissed = (memory.insights || [])
+      .filter((x) => x.dismissed).map((x) => "- " + x.text).join("\n");
+
+    try {
+      const res = await fetch(PROXY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_tokens: 400,
+          system: `Below is a stretch of real conversation with one person, followed by threads that keep recurring. Read the ACTUAL conversation — the threads only point at where to look. Say what you now understand that no single exchange shows on its own.
+
+Return ONLY valid JSON: {"insights": ["..."]}
+
+Rules:
+- At most 2. Return an empty array if nothing genuine emerges — that is the right answer more often than not.
+- Write them as tentative observations, not conclusions: "seems to", "tends to", "might".
+- Practical and usable — something that would change how you'd help them. Not personality analysis.
+- Don't restate a single fact. If it isn't a synthesis across several moments, it isn't an insight.
+- Notice what a summary would have thrown away: how they phrase things, what they circle back to, what they go quiet about, what shifts their energy.
+- You may reason about anything in the conversation, including hard things. But an insight is about PATTERNS and what would help — never a judgement of them as a person, and never a diagnosis.${dismissed ? "\n- They have already dismissed these, so do not propose them again:\n" + dismissed : ""}`,
+          messages: [{ role: "user", content:
+            "=== RECENT CONVERSATION (verbatim) ===\n" + rawText +
+            "\n\n=== RECURRING THREADS ===\n" + clusterText }],
+        }),
+      });
+      const data = await res.json();
+      const raw = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) return;
+      const parsed = JSON.parse(m[0]);
+      const now = Date.now();
+      (parsed.insights || []).forEach((text) => {
+        if (!text) return;
+        const key = noteKey(text);
+        if ((memory.insights || []).some((x) => noteKey(x.text) === key)) return;
+        memory.insights.push({
+          id: "i" + now + Math.random().toString(36).slice(2, 6),
+          text: String(text).trim(), createdAt: now,
+          amplitude: 0.7, lastHeard: now, hits: 1, dismissed: false,
+        });
+      });
+      memory.insights = (memory.insights || []).slice(-24);
+      saveMemory();
+    } catch (e) {
+      // Reflection is a bonus, never a blocker
     }
   }
 
@@ -1642,6 +2034,29 @@ Be conservative — only genuinely useful, durable items. Never include anything
     bodyEl.scrollTop = bodyEl.scrollHeight;
   }
 
+  // ------------------------------------------------------------
+  // The system prompt goes as TWO blocks, not one string.
+  //
+  // blue-bonnet-app-proxy wraps a STRING system prompt in a single
+  // cache_control block. That only pays off if the text is identical call
+  // to call — and the memory tail now moves constantly, because episodes,
+  // harmonic notes and insights all land in it. Concatenated, every change
+  // invalidates the whole ~7k-token knowledge base and the bill goes back
+  // to where it started.
+  //
+  // Stable prefix cached, volatile memory appended uncached. The worker
+  // passes an array straight through, so it needs no change.
+  // ------------------------------------------------------------
+  const STABLE_SYSTEM = `${IDENTITY}\n\nGENERAL KNOWLEDGE BASE:\n${KNOWLEDGE_BASE}\n\nWhen someone attaches a photo or document, actually read it and respond to what's really there rather than generic advice. If they've shared something dense (a form, a bill, a letter, a syllabus), remember the core principle: break it down. Pull out what actually matters and what the next action is, instead of summarizing everything at equal weight.\n\nRESPONSE SHAPE — this matters as much as content:\nDefault to SHORT. Two or three sentences, or one clear next step. A wall of text is itself a barrier for the people this is built for — it causes the exact overwhelm you're trying to reduce.\nIf you have more to say, end with a single short line offering it (e.g. "Want me to break that down further?" or "There's more if you want it."). Let them ask. Never pre-emptively dump everything you know.\nExceptions: if they explicitly ask for detail, a full plan, or "tell me everything," give it to them properly. Match what they asked for.`;
+
+  function systemBlocks(queryText) {
+    const blocks = [{ type: "text", text: STABLE_SYSTEM, cache_control: { type: "ephemeral" } }];
+    const mem = buildMemoryContext(queryText);
+    if (mem && mem.trim()) blocks.push({ type: "text", text: mem });
+    return blocks;
+  }
+
+
   async function sendMessage(preset) {
     const raw = (preset !== undefined ? preset : inputEl.value).trim();
     if ((!raw && !attached) || loading) return;
@@ -1678,7 +2093,7 @@ Be conservative — only genuinely useful, durable items. Never include anything
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           max_tokens: 1000,
-          system: `${IDENTITY}\n\nGENERAL KNOWLEDGE BASE:\n${KNOWLEDGE_BASE}\n\nWhen someone attaches a photo or document, actually read it and respond to what's really there rather than generic advice. If they've shared something dense (a form, a bill, a letter, a syllabus), remember the core principle: break it down. Pull out what actually matters and what the next action is, instead of summarizing everything at equal weight.\n\nRESPONSE SHAPE — this matters as much as content:\nDefault to SHORT. Two or three sentences, or one clear next step. A wall of text is itself a barrier for the people this is built for — it causes the exact overwhelm you're trying to reduce.\nIf you have more to say, end with a single short line offering it (e.g. "Want me to break that down further?" or "There's more if you want it."). Let them ask. Never pre-emptively dump everything you know.\nExceptions: if they explicitly ask for detail, a full plan, or "tell me everything," give it to them properly. Match what they asked for.${buildMemoryContext()}`,
+          system: systemBlocks(content),
           messages: messages,
         }),
       });
