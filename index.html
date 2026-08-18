@@ -115,12 +115,24 @@
      content) they silently swallow clicks on everything underneath.
      This keeps Blue Bonnet's own UI clickable regardless. */
   #onboarding, #voicePanel, #inputRow, header, #chatBody { position: relative; }
-  #onboarding.show, #voicePanel.show { position: fixed; }
+  #onboarding.show, #voicePanel.show, #chatsPanel.show { position: fixed; }
   .nudge { background: var(--accent-soft); border: 1px solid var(--accent-line); }
   #voiceSettingsBtn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border);
     background: var(--panel2); color: var(--muted); cursor: pointer; display: flex; align-items: center;
     justify-content: center; flex-shrink: 0; }
   #voiceSettingsBtn:hover { color: var(--text); }
+  #chatsPanel { display: none; position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.6);
+    align-items: center; justify-content: center; padding: 20px; }
+  #chatsPanel.show { display: flex; }
+  .chat-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 11px 12px; margin-bottom: 7px; cursor: pointer; color: inherit; }
+  .chat-item.current { border-left: 3px solid var(--accent); }
+  .chat-item .ci-main { flex: 1; min-width: 0; }
+  .chat-item .ci-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-item .ci-when { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .chat-del { background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 16px; padding: 4px 6px; flex-shrink: 0; }
   #voicePanel { display: none; position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.6);
     align-items: center; justify-content: center; padding: 20px; }
   #voicePanel.show { display: flex; }
@@ -220,10 +232,23 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
       <span>Conversation</span>
     </button>
+    <button id="chatsBtn" title="Past chats">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </button>
     <button id="voiceSettingsBtn" title="Choose a voice">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </header>
+
+  <div id="chatsPanel">
+    <div class="voice-card">
+      <h2>Your chats</h2>
+      <p class="sub">Everything stays on this device (and your own Drive, if you're signed in).</p>
+      <button id="newChatBtn" class="more-btn" style="margin-bottom:12px">+ Start a new chat</button>
+      <div id="chatList"></div>
+      <button id="chatsCloseBtn" class="more-btn" style="margin-top:10px">Close</button>
+    </div>
+  </div>
 
   <div id="voicePanel">
     <div class="voice-card">
@@ -334,6 +359,11 @@
     systemBlocks: (q) => systemBlocks(q),
     pushMessage: (m) => messages.push(m),
     clearMessages: () => { messages.length = 0; },
+    saveCurrentChat: () => saveCurrentChat(),
+    openChat: (id) => openChat(id),
+    newChat: () => newChat(),
+    deleteChat: (id) => deleteChat(id),
+    renderChats: () => renderChats(),
   };
 
   // ---- PWA install support ----
@@ -357,7 +387,7 @@
   // swallow every click on the page. Neutralise any that aren't ours.
   function disarmOverlays() {
     document.querySelectorAll("body > div, body > button").forEach(function (el) {
-      if (el.closest("#onboarding, #voicePanel, #chatBody, #inputRow, header, #attachPreview")) return;
+      if (el.closest("#onboarding, #voicePanel, #chatsPanel, #chatBody, #inputRow, header, #attachPreview")) return;
       if (el.id && /^(onboarding|voicePanel|chatBody|inputRow|attachPreview)$/.test(el.id)) return;
       var cs = window.getComputedStyle(el);
       if (cs.position === "fixed" && cs.pointerEvents !== "none") {
@@ -2072,6 +2102,267 @@ Rules:
   }
 
 
+  // ------------------------------------------------------------
+  // Streaming + retry
+  //
+  // Two separate problems. Slow: the app used to wait for the whole reply
+  // before rendering anything, so a 12-second generation felt like 12
+  // seconds of nothing. Streaming shows the first words in about a second;
+  // total time is unchanged, but the wait stops being dead air.
+  //
+  // Flaky: rate limits, brief 5xx and dropped connections are transient by
+  // definition. Retrying once quietly removes almost all of the occasional
+  // failures without the person ever seeing them. 4xx other than 429 is a
+  // real error and is NOT retried — retrying a bad request just fails
+  // slower.
+  // ------------------------------------------------------------
+  function isTransient(err) {
+    const m = String((err && err.message) || err || "");
+    return /\b(429|500|502|503|504|529)\b/.test(m)
+      || /rate.?limit|overloaded|timeout|failed to fetch|networkerror|load failed|aborted/i.test(m);
+  }
+
+  async function streamReply(content, onDelta) {
+    const res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 1000,
+        stream: true,
+        system: systemBlocks(content),
+        messages: messages,
+      }),
+    });
+
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.text()).slice(0, 300); } catch (e) {}
+      throw new Error("anthropic " + res.status + (detail ? ": " + detail : ""));
+    }
+
+    // No ReadableStream (old browser, or a proxy that buffered it) — fall
+    // back to reading it as one JSON body rather than failing.
+    if (!res.body || !res.body.getReader) {
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || "api error");
+      const t = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      onDelta(t);
+      return t;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", full = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();          // keep the partial line for next chunk
+      for (const line of lines) {
+        if (line.indexOf("data:") !== 0) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch (e) { continue; }
+        if (evt.type === "error") {
+          throw new Error((evt.error && evt.error.message) || "stream error");
+        }
+        if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
+          full += evt.delta.text;
+          onDelta(full);
+        }
+      }
+    }
+    if (!full) throw new Error("empty stream");
+    return full;
+  }
+
+  // A place to put words as they arrive.
+  function openReplyBubble() {
+    const empty = document.getElementById("emptyState");
+    if (empty) empty.remove();
+    const row = document.createElement("div");
+    row.className = "row assistant";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const textNode = document.createElement("div");
+    bubble.appendChild(textNode);
+    row.appendChild(bubble);
+    bodyEl.appendChild(row);
+    return {
+      set(t) {
+        textNode.textContent = t;
+        bodyEl.scrollTop = bodyEl.scrollHeight;
+      },
+      remove() { row.remove(); },
+    };
+  }
+
+  // ============================================================
+  // CHATS — past conversations you can go back to
+  //
+  // Until now a reload threw the conversation away. Chats live on
+  // memory.chats so they ride the same localStorage write and the same
+  // Drive mirror as everything else.
+  //
+  // Attachment bytes are NOT stored. A 4MB PDF in localStorage would blow
+  // the ~5MB budget on its own and then get pushed to Drive on every
+  // debounced save. The filename is kept so the transcript still reads
+  // correctly; the image itself is not replayed to the model on resume.
+  // ============================================================
+  const CHAT_BUDGET = 300000;   // ~300KB of transcript, well inside localStorage
+  const CHAT_MAX = 40;
+
+  function chats() {
+    if (!Array.isArray(memory.chats)) memory.chats = [];
+    return memory.chats;
+  }
+
+  function plainText(content) {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    const t = content.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+    const att = content.filter((b) => b && (b.type === "image" || b.type === "document")).length;
+    return att ? (t + (t ? "\n" : "") + "[attachment]") : t;
+  }
+
+  function titleFor(msgs) {
+    const first = msgs.find((m) => m.role === "user");
+    const t = first ? plainText(first.content || first.text || "").replace(/\s+/g, " ").trim() : "";
+    if (!t) return "New chat";
+    return t.length > 48 ? t.slice(0, 46) + "\u2026" : t;
+  }
+
+  function currentChat() {
+    return chats().find((c) => c.id === memory.currentChatId) || null;
+  }
+
+  function saveCurrentChat() {
+    if (!messages.length) return;
+    const msgs = messages.map((m) => ({ role: m.role, text: plainText(m.content) }))
+                         .filter((m) => m.text);
+    if (!msgs.length) return;
+    let c = currentChat();
+    if (!c) {
+      c = { id: "c" + Date.now().toString(36), startedAt: Date.now(), msgs: [] };
+      chats().push(c);
+      memory.currentChatId = c.id;
+    }
+    c.msgs = msgs;
+    c.updatedAt = Date.now();
+    c.title = titleFor(msgs);
+    pruneChats();
+    saveMemory();
+  }
+
+  // Oldest first out, and never let the transcript store crowd out memory.
+  function pruneChats() {
+    const list = chats();
+    list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    while (list.length > CHAT_MAX) list.pop();
+    while (list.length > 1 && JSON.stringify(list).length > CHAT_BUDGET) list.pop();
+  }
+
+  function openChat(id) {
+    const c = chats().find((x) => x.id === id);
+    if (!c) return;
+    memory.currentChatId = id;
+    messages.length = 0;
+    bodyEl.innerHTML = "";
+    c.msgs.forEach((m) => {
+      messages.push({ role: m.role, content: m.text });
+      render(m.role, m.text);
+    });
+    saveMemory();
+    closeChats();
+  }
+
+  function newChat() {
+    saveCurrentChat();
+    memory.currentChatId = null;
+    messages.length = 0;
+    bodyEl.innerHTML = "";
+    saveMemory();
+    closeChats();
+  }
+
+  function deleteChat(id) {
+    memory.chats = chats().filter((c) => c.id !== id);
+    if (memory.currentChatId === id) { memory.currentChatId = null; messages.length = 0; bodyEl.innerHTML = ""; }
+    saveMemory();
+    renderChats();
+  }
+
+  function whenText(ts) {
+    const d = Math.floor((Date.now() - (ts || 0)) / 86400000);
+    if (d <= 0) return "today";
+    if (d === 1) return "yesterday";
+    if (d < 7) return d + " days ago";
+    return new Date(ts).toLocaleDateString();
+  }
+
+  function renderChats() {
+    const list = document.getElementById("chatList");
+    if (!list) return;
+    list.innerHTML = "";
+    const all = chats().slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (!all.length) {
+      const p = document.createElement("p");
+      p.className = "sub";
+      p.textContent = "No past chats yet. This one will show up here once you've said something.";
+      list.appendChild(p);
+      return;
+    }
+    all.forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "chat-item" + (c.id === memory.currentChatId ? " current" : "");
+      const main = document.createElement("button");
+      main.className = "ci-main";
+      main.style.cssText = "background:none;border:none;color:inherit;text-align:left;cursor:pointer;padding:0";
+      const t = document.createElement("div");
+      t.className = "ci-title";
+      t.textContent = c.title || "Chat";
+      const w = document.createElement("div");
+      w.className = "ci-when";
+      w.textContent = whenText(c.updatedAt) + " \u00b7 " + c.msgs.length + " messages";
+      main.appendChild(t); main.appendChild(w);
+      main.onclick = () => openChat(c.id);
+      const del = document.createElement("button");
+      del.className = "chat-del";
+      del.title = "Delete this chat";
+      del.textContent = "\u00d7";
+      del.onclick = (e) => { e.stopPropagation(); deleteChat(c.id); };
+      row.appendChild(main); row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  function openChats() {
+    saveCurrentChat();
+    renderChats();
+    document.getElementById("chatsPanel").classList.add("show");
+  }
+  function closeChats() { document.getElementById("chatsPanel").classList.remove("show"); }
+
+  (function wireChats() {
+    const b = document.getElementById("chatsBtn");
+    if (b) b.onclick = openChats;
+    const n = document.getElementById("newChatBtn");
+    if (n) n.onclick = newChat;
+    const c = document.getElementById("chatsCloseBtn");
+    if (c) c.onclick = closeChats;
+  })();
+
+  // Pick up where they left off rather than opening on a blank page.
+  (function resumeLastChat() {
+    const c = currentChat();
+    if (c && c.msgs && c.msgs.length) {
+      c.msgs.forEach((m) => { messages.push({ role: m.role, content: m.text }); render(m.role, m.text); });
+    }
+  })();
+
   async function sendMessage(preset) {
     const raw = (preset !== undefined ? preset : inputEl.value).trim();
     if ((!raw && !attached) || loading) return;
@@ -2104,13 +2395,32 @@ Rules:
     try {
       if (PROXY_URL.includes("PASTE_YOUR")) throw new Error("PROXY_URL not configured yet");
 
-      let text;
+      let text = "";
+      let bubble = null;
 
-      if (kitReady()) {
-        // ask() mutates the array it is given and pushes assistant content
-        // as blocks; the transcript, memory extractor and episode store all
-        // expect strings, so it gets a copy and the plain turn is pushed
-        // below.
+      try {
+        // Attempt 1: stream. One quiet retry if it's the transient kind.
+        try {
+          text = await streamReply(content, (t) => {
+            if (!bubble) { loadingRow.remove(); bubble = openReplyBubble(); }
+            bubble.set(t);
+          });
+        } catch (firstErr) {
+          if (!isTransient(firstErr)) throw firstErr;
+          console.warn("transient, retrying once:", firstErr.message);
+          if (bubble) { bubble.remove(); bubble = null; }
+          await new Promise((r) => setTimeout(r, 900));
+          text = await streamReply(content, (t) => {
+            if (!bubble) { try { loadingRow.remove(); } catch (e) {} bubble = openReplyBubble(); }
+            bubble.set(t);
+          });
+        }
+      } catch (streamErr) {
+        // Streaming is gone. If the kit is here, let the gateway catch it
+        // rather than showing the person an error.
+        if (bubble) { bubble.remove(); bubble = null; }
+        if (!kitReady()) throw streamErr;
+        console.warn("stream failed, trying gateway:", streamErr.message);
         const r = await BBKit.ask({
           system: systemBlocks(content),
           messages: messages.slice(),
@@ -2122,30 +2432,15 @@ Rules:
           },
         });
         text = r.text || "No response received.";
-        if (r.usedBackup) {
-          console.log("fell back to gateway:", r.backupReason, r.primaryError);
-          text = "\u{1F9E0}\n\n" + text;
-        }
-      } else {
-        const res = await fetch(PROXY_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            max_tokens: 1000,
-            system: systemBlocks(content),
-            messages: messages,
-          }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-        if (!res.ok) throw new Error("Request failed (status " + res.status + ")");
-        text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n") || "No response received.";
+        if (r.usedBackup) text = "\u{1F9E0}\n\n" + text;
       }
 
+      if (bubble) bubble.remove();   // re-rendered properly below, with Listen
       loadingRow.remove();
       {
         render("assistant", text);
         messages.push({ role: "assistant", content: text });
+        saveCurrentChat();
         maybeUpdateMemory();
         // In conversation mode, speak the reply then automatically listen again
         if (conversationMode) {
